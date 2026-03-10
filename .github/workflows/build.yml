@@ -8,7 +8,7 @@ on:
         required: true
         default: '512'
       extra_packages:
-        description: '额外的软件包 (空格分隔)'
+        description: '额外的软件包'
         required: false
         default: ''
 
@@ -19,38 +19,23 @@ jobs:
       - name: 检查分支
         uses: actions/checkout@v4
 
-      - name: 安装 zstd 依赖
+      - name: 安装 zstd
         run: sudo apt-get update && sudo apt-get install -y zstd
 
       - name: 下载并解压 Image Builder
         run: |
-          # 下载 24.10.5 x86_64
           wget https://downloads.immortalwrt.org/releases/24.10.5/targets/x86/64/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64.tar.zst
-          
-          # 强制指定解压到固定目录 'ib' 避免路径模糊
-          mkdir ib
-          tar --zstd -xf *.tar.zst -C ib --strip-components=1
-          echo "IB_DIR=$GITHUB_WORKSPACE/ib" >> $GITHUB_ENV
+          mkdir ib && tar --zstd -xf *.tar.zst -C ib --strip-components=1
 
-      - name: 配置分区大小
+      - name: 一键打包固件
         run: |
-          cd ${{ env.IB_DIR }}
-          # 在 .config 中修改 Rootfs 大小
-          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}/' .config
-          # 同时也修改底层的默认配置文件以防万一
-          if [ -f include/image.mk ]; then
-            sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE:=.*/CONFIG_TARGET_ROOTFS_PARTSIZE:=${{ github.event.inputs.rootfs_size }}/' include/image.mk
-          fi
+          cd ib
+          make image \
+            PACKAGES="${{ github.event.inputs.extra_packages }} autocore automount base-files block-mount ca-bundle default-settings-chn dnsmasq-full dropbear fdisk firewall4 fstools grub2-bios-setup i915-firmware-dmc kmod-8139cp kmod-8139too kmod-button-hotplug kmod-e1000e kmod-fs-f2fs kmod-i40e kmod-igb kmod-igbvf kmod-igc kmod-ixgbe kmod-ixgbevf kmod-nf-nathelper kmod-nf-nathelper-extra kmod-nft-offload kmod-pcnet32 kmod-r8101 kmod-r8125 kmod-r8126 kmod-r8168 kmod-tulip kmod-usb-hid kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 kmod-usb-net-rtl8152-vendor kmod-vmxnet3 libc libgcc libustream-openssl logd luci-app-package-manager luci-compat luci-lib-base luci-lib-ipkg luci-light mkf2fs mtd netifd nftables odhcp6c odhcpd-ipv6only opkg partx-utils ppp ppp-mod-pppoe procd-ujail uci uclient-fetch urandom-seed urngd kmod-amazon-ena kmod-amd-xgbe kmod-bnx2 kmod-e1000 kmod-dwmac-intel kmod-forcedeth kmod-fs-vfat kmod-tg3 kmod-drm-i915" \
+            CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}
 
-      - name: 生成固件
-        run: |
-          cd ${{ env.IB_DIR }}
-          # N5105 建议加上 kmod-igc (2.5G网卡驱动)
-          # 添加 fdisk 和 resize2fs 方便后续扩容
-          make image PACKAGES="${{ github.event.inputs.extra_packages }} kmod-igc fdisk resize2fs"
-
-      - name: 上传固件
+      - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt-24.10.5-Custom
-          path: ${{ env.IB_DIR }}/bin/targets/x86/64/*.img.gz
+          name: ImmortalWrt-N5105
+          path: ib/bin/targets/x86/64/*.img.gz
