@@ -22,8 +22,8 @@ jobs:
       - name: 下载 Image Builder
         run: |
           # 以 ImmortalWrt 24.10.5 x86_64 为例
-          wget https://downloads.immortalwrt.org/releases/24.10.5/targets/x86/64/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64.tar.xz
-          tar -xJf *.tar.xz
+          wget https://downloads.immortalwrt.org/releases/24.10.5/targets/x86/64/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64.tar.zst
+          tar --zstd -xf *.tar.zst
           echo "IB_DIR=$(ls -d immortalwrt-imagebuilder-*)" >> $GITHUB_ENV
 
       - name: 配置分区大小
