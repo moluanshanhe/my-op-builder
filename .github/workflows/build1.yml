@@ -1,0 +1,55 @@
+name: 快速打包固件
+
+on:
+  workflow_dispatch:
+    inputs:
+      rootfs_size:
+        description: '根分区大小 (MiB)'
+        required: true
+        default: '1024'
+      extra_packages:
+        description: '额外的软件包'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查分支
+        uses: actions/checkout@v4
+
+      - name: 安装 zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd qemu-utils build-essential libncurses5-dev libncursesw5-dev zlib1g-dev gawk genisoimage git gettext libssl-dev xsltproc rsync wget unzip python3
+
+      - name: 下载并解压 Image Builder
+        run: |
+          wget https://downloads.immortalwrt.org/releases/24.10.5/targets/x86/64/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64.tar.zst
+          mkdir ib && tar --zstd -xf *.tar.zst -C ib --strip-components=1
+      - name: 强制修改分区定义
+        run: |
+          cd ib
+          # 1. 修改 .config 主配置文件
+          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}/' .config
+          # 2. 修改 x86 架构 Makefile 里的硬编码默认值 (这是 300MB 变不回 1024MB 的罪魁祸首)
+          find target/linux/x86/ -name "Makefile" -exec sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE:=.*/CONFIG_TARGET_ROOTFS_PARTSIZE:=${{ github.event.inputs.rootfs_size }}/' {} +
+      - name: 一键打包固件
+        run: |
+          cd ib
+          make image \
+            PACKAGES="${{ github.event.inputs.extra_packages }} " \
+            CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }} \
+            CONFIG_TARGET_IMAGES_GZ=y \
+            CONFIG_ISO_IMAGES=n \
+            CONFIG_QCOW2_IMAGES=n \
+            CONFIG_VDI_IMAGES=n \
+            CONFIG_VMDK_IMAGES=n \
+            CONFIG_VHDX_IMAGES=n \
+            CONFIG_TARGET_ROOTFS_TARGZ=n \
+            CONFIG_TARGET_ROOTFS_EXT4FS=n
+
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-N5105
+          path: ib/bin/targets/x86/64/*.img.gz
