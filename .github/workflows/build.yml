@@ -10,7 +10,7 @@ on:
       extra_packages:
         description: '额外的软件包 (空格分隔)'
         required: false
-        default: 'luci-app-ssr-plus luci-i18n-ssr-plus-zh-cn luci-app-upnp luci-app-turboacc'
+        default: ''
 
 jobs:
   build:
