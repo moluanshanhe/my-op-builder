@@ -1,0 +1,45 @@
+name: 快速打包固件
+
+on:
+  workflow_dispatch:
+    inputs:
+      rootfs_size:
+        description: '根分区大小 (MiB)'
+        required: true
+        default: '512'
+      extra_packages:
+        description: '额外的软件包 (空格分隔)'
+        required: false
+        default: 'luci-app-ssr-plus luci-i18n-ssr-plus-zh-cn'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查分支
+        uses: actions/checkout@v4
+
+      - name: 下载 Image Builder
+        run: |
+          # 以 ImmortalWrt 24.10.5 x86_64 为例
+          wget https://downloads.immortalwrt.org/releases/24.10.5/targets/x86/64/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64.tar.xz
+          tar -xJf *.tar.xz
+          echo "IB_DIR=$(ls -d immortalwrt-imagebuilder-*)" >> $GITHUB_ENV
+
+      - name: 配置分区大小
+        run: |
+          cd ${{ env.IB_DIR }}
+          # 修改 .config 文件中的分区大小
+          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}/' .config
+
+      - name: 生成固件
+        run: |
+          cd ${{ env.IB_DIR }}
+          # 执行打包命令，PACKAGES 参数包含你输入的插件
+          make image PACKAGES="${{ github.event.inputs.extra_packages }} fdisk resize2fs"
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-Custom
+          path: ${{ env.IB_DIR }}/bin/targets/x86/64/*.img.gz
