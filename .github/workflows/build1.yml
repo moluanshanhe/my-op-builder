@@ -52,4 +52,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ImmortalWrt-N5105
-          path: ib/bin/targets/x86/64/*.img.gz
+          path: ib/bin/targets/x86/64/*-squashfs-combined-efi.img.gz
