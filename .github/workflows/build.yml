@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 安装 zstd
-        run: sudo apt-get update && sudo apt-get install -y zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd qemu-utils
 
       - name: 下载并解压 Image Builder
         run: |
