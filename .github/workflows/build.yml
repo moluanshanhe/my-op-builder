@@ -83,7 +83,11 @@ jobs:
               option username '${{ github.event.inputs.pppoe_user }}'
               option password '${{ github.event.inputs.pppoe_pass }}'
           EOF
-
+      - name: 预设防火墙规则
+        run: |
+          mkdir -p ib/files/etc/config
+          # 直接将变量内容打入文件，变量末尾自带换行
+          echo "${{ vars.MY_FIREWALL_CONFIG }}" >> ib/files/etc/config/firewall
       - name: 修改分区大小
         run: |
           cd ib
