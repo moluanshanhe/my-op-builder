@@ -53,6 +53,7 @@ jobs:
           cd ib
           BASE_URL=${{ github.event.inputs.custom_repo_url }}
           # 注入第三方源
+          echo "src/gz custom_kiddin9 https://dl.openwrt.ai/releases/24.10/packages/x86_64/kiddin9" >> repositories.conf
           echo "src/gz custom_packages $BASE_URL/packages" >> repositories.conf
           echo "src/gz custom_luci $BASE_URL/luci" >> repositories.conf
           # 禁用签名检查以允许安装第三方包
