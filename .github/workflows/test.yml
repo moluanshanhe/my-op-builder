@@ -114,7 +114,9 @@ jobs:
           echo "### 🚀 Gofile 下载地址: $DOWNLOAD_PAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: 3. 推送至群晖 NAS (WebDAV)
+        continue-on-error: true
         run: |
           cd ib/bin/targets/x86/64/
           FIRMWARE_FILE=$(ls *-combined-efi.img.gz | head -n 1)
+          # 使用 curl 推送，-k 忽略证书错误，-f 失败时返回非零但会被 continue-on-error 吸收
           curl -k -u "${{ secrets.NAS_USER }}:${{ secrets.NAS_PASS }}" -T ./"$FIRMWARE_FILE" "http://${{ secrets.NAS_HOST }}:5005/docker/op-builder/firmware_sync/$FIRMWARE_FILE"
