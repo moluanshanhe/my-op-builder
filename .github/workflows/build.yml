@@ -98,7 +98,7 @@ jobs:
         run: |
           cd ib
           make image \
-            PACKAGES="${{ github.event.inputs.extra_packages }} luci luci-i18n-base-zh-cn kmod-igc kmod-r8125 kmod-r8168 -dnsmasq dnsmasq-full ppp-mod-pppoe" \
+            PACKAGES="${{ github.event.inputs.extra_packages }} luci luci-i18n-base-zh-cn kmod-igc kmod-r8125 kmod-r8168 -dnsmasq dnsmasq-full ppp-mod-pppoe luci-app-frps luci-app-timedreboot" \
             FILES="files/"
 
       - name: 1. 上传 GitHub Artifacts
