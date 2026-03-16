@@ -58,72 +58,57 @@ jobs:
         run: |
           mkdir -p ib/files/etc/config
           cat <<EOF > ib/files/etc/config/network
-          config interface 'loopback'
+              config interface 'loopback'
               option device 'lo'
               option proto 'static'
               option ipaddr '127.0.0.1'
               option netmask '255.0.0.0'
 
-          config device
+              config globals 'globals'
+              option ula_prefix 'fd79:d90c:7498::/48'
+              option packet_steering '1'
+
+              config device
               option name 'br-lan'
               option type 'bridge'
               list ports 'eth0'
               list ports 'eth1'
               list ports 'eth2'
 
-          config interface 'lan'
+              config interface 'lan'
               option device 'br-lan'
               option proto 'static'
               option ipaddr '192.168.1.1'
               option netmask '255.255.255.0'
+              option ip6assign '60'
 
-          config interface 'wan'
+              config interface 'wan'
               option device 'eth3'
               option proto 'pppoe'
               option username '${{ github.event.inputs.pppoe_user }}'
               option password '${{ github.event.inputs.pppoe_pass }}'
+              option ipv6 'auto'
+              option norelease '1'
           EOF
-      - name: 重新构建防火墙配置 (防止区域失效)
-        run: |
-          mkdir -p ib/files/etc/config
-          # 直接覆盖创建，包含基础区域定义
-          cat <<EOF > ib/files/etc/config/firewall
-          config defaults
-              option syn_flood '1'
-              option input 'ACCEPT'
-              option output 'ACCEPT'
-              option forward 'REJECT'
-
-          config zone
-              option name 'lan'
-              list network 'lan'
-              option input 'ACCEPT'
-              option output 'ACCEPT'
-              option forward 'ACCEPT'
-
-          config zone
-              option name 'wan'
-              list network 'wan'
-              list network 'wan6'
-              option input 'REJECT'
-              option output 'ACCEPT'
-              option forward 'REJECT'
-              option masq '1'
-              option mtu_fix '1'
-
-          config forwarding
-              option src 'lan'
-              option dest 'wan'
-
-          # 下面是你的自定义转发规则
-          ${{ vars.MY_FIREWALL_CONFIG }}
-          EOF
+          
       - name: 修改分区大小
         run: |
           cd ib
           sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}/" .config
           find target/linux/x86/ -name "Makefile" -exec sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE:=.*/CONFIG_TARGET_ROOTFS_PARTSIZE:=${{ github.event.inputs.rootfs_size }}/" {} +
+      - name: 创建初次启动自动配置脚本 (uci-defaults)
+        run: |
+          mkdir -p ib/files/etc/uci-defaults
+          cat <<EOF > ib/files/etc/uci-defaults/99-custom-settings
+          #!/bin/sh
+          cat <<EOT >> /etc/config/firewall
 
+          ${{ vars.MY_FIREWALL_CONFIG }}
+          EOT
+          
+          exit 0
+          EOF
+          chmod +x ib/files/etc/uci-defaults/99-custom-settings
       - name: 执行固件打包
         run: |
           cd ib
