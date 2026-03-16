@@ -1,0 +1,115 @@
+name: 编译 OpenWrt (25.12 官方+第三方库)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'OpenWrt 版本 (默认 25.12)'
+        required: false
+        default: '25.12.0'
+      rootfs_size:
+        description: '根分区大小 (MiB)'
+        required: true
+        default: '1024'
+      pppoe_user:
+        description: '宽带拨号账号'
+        required: true
+        default: 'user_name'
+      pppoe_pass:
+        description: '宽带拨号密码'
+        required: true
+        default: 'password'
+      extra_packages:
+        description: '额外的软件包 (空格分隔)'
+        required: false
+        default: 'luci-app-homeproxy luci-i18n-homeproxy-zh-cn luci-app-ttyd pciutils ethtool'
+      custom_repo_url:
+        description: '第三方仓库基础地址'
+        required: false
+        default: 'https://dl.openwrt.ai/releases/25.12/packages/x86_64'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查分支
+        uses: actions/checkout@v4
+
+      - name: 环境准备
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd qemu-utils build-essential libncurses5-dev libncursesw5-dev \
+          zlib1g-dev gawk genisoimage git gettext libssl-dev xsltproc rsync wget unzip python3 curl
+
+      - name: 下载 25.12 Image Builder
+        run: |
+          VERSION=${{ github.event.inputs.version }}
+          URL="https://downloads.openwrt.org/releases/$VERSION/targets/x86/64/openwrt-imagebuilder-$VERSION-x86-64.Linux-x86_64.tar.zst"
+          wget $URL
+          mkdir ib && tar --zstd -xf *.tar.zst -C ib --strip-components=1
+
+      - name: 配置第三方仓库源 (openwrt.ai)
+        run: |
+          cd ib
+          BASE_URL=${{ github.event.inputs.custom_repo_url }}
+          # 注入第三方源
+          echo "src/gz custom_packages $BASE_URL/packages" >> repositories.conf
+          echo "src/gz custom_luci $BASE_URL/luci" >> repositories.conf
+          # 禁用签名检查以允许安装第三方包
+          sed -i 's/^option check_signature/# option check_signature/' repositories.conf
+
+      - name: 预设网络配置 (eth3=WAN, eth0-2=LAN)
+        run: |
+          mkdir -p ib/files/etc/config
+          cat <<EOF > ib/files/etc/config/network
+          config interface 'loopback'
+              option device 'lo'
+              option proto 'static'
+              option ipaddr '127.0.0.1'
+              option netmask '255.0.0.0'
+
+          config device
+              option name 'br-lan'
+              option type 'bridge'
+              list ports 'eth0'
+              list ports 'eth1'
+              list ports 'eth2'
+
+          config interface 'lan'
+              option device 'br-lan'
+              option proto 'static'
+              option ipaddr '192.168.1.1'
+              option netmask '255.255.255.0'
+
+          config interface 'wan'
+              option device 'eth3'
+              option proto 'pppoe'
+              option username '${{ github.event.inputs.pppoe_user }}'
+              option password '${{ github.event.inputs.pppoe_pass }}'
+              option ipv6 'auto'
+          EOF
+
+      - name: 修改分区大小
+        run: |
+          cd ib
+          sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}/" .config
+          find target/linux/x86/ -name "Makefile" -exec sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE:=.*/CONFIG_TARGET_ROOTFS_PARTSIZE:=${{ github.event.inputs.rootfs_size }}/" {} +
+
+      - name: 执行固件打包
+        run: |
+          cd ib
+          # 包含 N5105 直通所需驱动及 dnsmasq-full 替换逻辑
+          make image \
+            PACKAGES="${{ github.event.inputs.extra_packages }} \
+            luci luci-i18n-base-zh-cn luci-app-firewall luci-i18n-firewall-zh-cn \
+            kmod-igc kmod-r8125 kmod-r8168 \
+            -dnsmasq dnsmasq-full \
+            fdisk lsblk ppp-mod-pppoe" \
+            FILES="files/" \
+            CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-25.12-PVE-Custom
+          path: ib/bin/targets/x86/64/*-generic-squashfs-combined-efi.img.gz
