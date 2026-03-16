@@ -1,0 +1,120 @@
+name: 编译 OpenWrt (EFI专用-网口桥接)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本'
+        required: true
+        default: '24.10.5'
+      rootfs_size:
+        description: '分区 (MiB)'
+        required: true
+        default: '1024'
+      pppoe_user:
+        description: '拨号账号'
+        required: false
+      pppoe_pass:
+        description: '拨号密码'
+        required: false
+      extra_packages:
+        description: '插件'
+        required: false
+      custom_repo_url:
+        description: '源'
+        required: false
+        default: 'https://dl.openwrt.ai/releases/24.10/packages/x86_64'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查分支
+        uses: actions/checkout@v4
+
+      - name: 环境准备
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd qemu-utils build-essential gawk genisoimage gettext libssl-dev xsltproc rsync wget unzip python3 curl jq
+
+      - name: 下载 Image Builder
+        run: |
+          VERSION=${{ github.event.inputs.version }}
+          URL="https://downloads.openwrt.org/releases/$VERSION/targets/x86/64/openwrt-imagebuilder-$VERSION-x86-64.Linux-x86_64.tar.zst"
+          wget $URL
+          mkdir ib && tar --zstd -xf *.tar.zst -C ib --strip-components=1
+
+      - name: 配置软件源与精简格式 (只要 SQUASHFS-EFI)
+        run: |
+          cd ib
+          echo "src/gz custom_kiddin9 ${{ github.event.inputs.custom_repo_url }}/kiddin9" >> repositories.conf
+          sed -i 's/^option check_signature/# option check_signature/' repositories.conf
+          # 禁用 ext4，只要 squashfs
+          echo "CONFIG_TARGET_ROOTFS_EXT4FS=n" >> .config
+          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+          echo "CONFIG_TARGET_IMAGES_GZ=y" >> .config
+
+      - name: 补全网络桥接配置 (eth3=WAN, eth0-2=LAN)
+        run: |
+          mkdir -p ib/files/etc/config
+          cat <<EOF > ib/files/etc/config/network
+          config interface 'loopback'
+              option device 'lo'
+              option proto 'static'
+              option ipaddr '127.0.0.1'
+              option netmask '255.0.0.0'
+
+          config device
+              option name 'br-lan'
+              option type 'bridge'
+              list ports 'eth0'
+              list ports 'eth1'
+              list ports 'eth2'
+
+          config interface 'lan'
+              option device 'br-lan'
+              option proto 'static'
+              option ipaddr '192.168.1.1'
+              option netmask '255.255.255.0'
+
+          config interface 'wan'
+              option device 'eth3'
+              option proto 'pppoe'
+              option username '${{ github.event.inputs.pppoe_user }}'
+              option password '${{ github.event.inputs.pppoe_pass }}'
+          EOF
+
+      - name: 修改分区大小
+        run: |
+          cd ib
+          sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}/" .config
+          find target/linux/x86/ -name "Makefile" -exec sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE:=.*/CONFIG_TARGET_ROOTFS_PARTSIZE:=${{ github.event.inputs.rootfs_size }}/" {} +
+
+      - name: 执行固件打包
+        run: |
+          cd ib
+          make image \
+            PACKAGES="${{ github.event.inputs.extra_packages }} luci luci-i18n-base-zh-cn kmod-igc kmod-r8125 kmod-r8168 -dnsmasq dnsmasq-full ppp-mod-pppoe" \
+            FILES="files/"
+
+      - name: 1. 上传 GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-EFI-${{ github.run_id }}
+          path: ib/bin/targets/x86/64/*-combined-efi.img.gz
+
+      - name: 2. 上传 Gofile
+        run: |
+          cd ib/bin/targets/x86/64/
+          FIRMWARE_FILE=$(ls *-combined-efi.img.gz | head -n 1)
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          UPLOAD_RES=$(curl -F "file=@$FIRMWARE_FILE" "https://$SERVER.gofile.io/contents/uploadfile")
+          DOWNLOAD_PAGE=$(echo $UPLOAD_RES | jq -r '.data.downloadPage')
+          echo "GOFILE_LINK: $DOWNLOAD_PAGE"
+          echo "### 🚀 Gofile 下载地址: $DOWNLOAD_PAGE" >> $GITHUB_STEP_SUMMARY
+
+      - name: 3. 推送至群晖 NAS (WebDAV)
+        run: |
+          cd ib/bin/targets/x86/64/
+          FIRMWARE_FILE=$(ls *-combined-efi.img.gz | head -n 1)
+          curl -k -u "${{ secrets.NAS_USER }}:${{ secrets.NAS_PASS }}" -T ./"$FIRMWARE_FILE" "http://${{ secrets.NAS_HOST }}:5005/docker/op-builder/firmware_sync/$FIRMWARE_FILE"
