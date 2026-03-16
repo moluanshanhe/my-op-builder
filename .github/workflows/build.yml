@@ -103,8 +103,15 @@ jobs:
           make image \
             PACKAGES="${{ github.event.inputs.extra_packages }} luci luci-i18n-base-zh-cn luci-app-firewall luci-i18n-firewall-zh-cn kmod-igc kmod-r8125 kmod-r8168 -dnsmasq dnsmasq-full fdisk lsblk ppp-mod-pppoe" \
             FILES="files/" \
-            CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}
-
+            CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }} 
+            CONFIG_TARGET_IMAGES_GZ=y \
+            CONFIG_ISO_IMAGES=n \
+            CONFIG_QCOW2_IMAGES=n \
+            CONFIG_VDI_IMAGES=n \
+            CONFIG_VMDK_IMAGES=n \
+            CONFIG_VHDX_IMAGES=n \
+            CONFIG_TARGET_ROOTFS_TARGZ=n \
+            CONFIG_TARGET_ROOTFS_EXT4FS=n
       - name: 上传至 Gofile 并生成直链
         run: |
           cd ib/bin/targets/x86/64/
