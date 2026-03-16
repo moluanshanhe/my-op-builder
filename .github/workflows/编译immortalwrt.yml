@@ -1,4 +1,4 @@
-name: 快速打包固件v1
+name: 编译immortalwrt24.10.5
 
 on:
   workflow_dispatch:
