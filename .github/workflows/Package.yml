@@ -1,0 +1,94 @@
+name: Multi-Package OpenWrt SDK Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'OpenWrt 版本 (如 23.05.3, SNAPSHOT)'
+        required: true
+        default: '23.05.3'
+      arch:
+        description: '架构路径 (如 x86/64, ramips/mt7621)'
+        required: true
+        default: 'x86/64'
+      repo_urls:
+        description: '插件仓库 Git 链接 (多个请用空格或逗号分隔)'
+        required: true
+        default: 'https://github.com/fw876/helloworld.git'
+      package_names:
+        description: '要编译的包名 (多个请用空格或逗号分隔，如: luci-app-ssr-plus luci-app-passwall)'
+        required: true
+        default: 'luci-app-ssr-plus'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential gettext libncurses5-dev libssl-dev zlib1g-dev gawk git python3 zstd
+
+      - name: Download and Extract SDK
+        run: |
+          if [[ "${{ github.event.inputs.openwrt_version }}" == "SNAPSHOT" ]]; then
+            BASE_URL="https://downloads.openwrt.org/snapshots/targets/${{ github.event.inputs.arch }}"
+          else
+            BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.arch }}"
+          fi
+
+          SDK_FILE=$(curl -sL $BASE_URL | grep -oP 'openwrt-sdk-[^"]*\.tar\.(zst|xz)' | head -n 1)
+          
+          if [ -z "$SDK_FILE" ]; then
+            echo "错误: 未找到 SDK 文件！"
+            exit 1
+          fi
+
+          wget "$BASE_URL/$SDK_FILE" -O sdk_archive
+          mkdir sdk
+          if [[ "$SDK_FILE" == *.zst ]]; then
+            zstd -d sdk_archive -c | tar -x -C sdk --strip-components=1
+          else
+            tar -xJf sdk_archive -C sdk --strip-components=1
+          fi
+
+      - name: Add Multiple Repositories
+        run: |
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # 将逗号替换为空格，处理多个 URL
+          REPOS=$(echo "${{ github.event.inputs.repo_urls }}" | tr ',' ' ')
+          INDEX=1
+          for REPO in $REPOS; do
+            echo "添加仓库 $INDEX: $REPO"
+            echo "src-git custom_repo_$INDEX $REPO" >> feeds.conf.default
+            ((INDEX++))
+          done
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Compile Multiple Packages
+        run: |
+          cd sdk
+          make defconfig
+          
+          # 将逗号替换为空格，循环编译
+          PKGS=$(echo "${{ github.event.inputs.package_names }}" | tr ',' ' ')
+          for PKG in $PKGS; do
+            echo "正在编译包: $PKG"
+            # 使用 -j$(nproc) 开启多核编译提高速度，如果报错可改回单核
+            make package/$PKG/compile V=s -j$(nproc) || make package/$PKG/compile V=s
+          done
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-Packages-${{ github.event.inputs.openwrt_version }}-${{ github.run_id }}
+          path: |
+            sdk/bin/packages/**/*.ipk
