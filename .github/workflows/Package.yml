@@ -1,22 +1,22 @@
-name: Multi-Package OpenWrt SDK Build
+name: OpenWrt Multi-Package Build (APK/IPK Support)
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: 'OpenWrt 版本 (如 23.05.3, SNAPSHOT)'
+        description: 'OpenWrt 版本 (24.10 以上为 .apk, 23.05 以下为 .ipk)'
         required: true
-        default: '23.05.3'
+        default: '24.10.0'
       arch:
-        description: '架构路径 (如 x86/64, ramips/mt7621)'
+        description: '架构路径 (如 x86/64, mediatek/filogic)'
         required: true
         default: 'x86/64'
       repo_urls:
-        description: '插件仓库 Git 链接 (多个请用空格或逗号分隔)'
+        description: '仓库链接 (空格或逗号分隔)'
         required: true
         default: 'https://github.com/fw876/helloworld.git'
       package_names:
-        description: '要编译的包名 (多个请用空格或逗号分隔，如: luci-app-ssr-plus luci-app-passwall)'
+        description: '包名 (空格或逗号分隔)'
         required: true
         default: 'luci-app-ssr-plus'
 
@@ -40,13 +40,9 @@ jobs:
             BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.arch }}"
           fi
 
+          # 匹配 .tar.zst 或 .tar.xz
           SDK_FILE=$(curl -sL $BASE_URL | grep -oP 'openwrt-sdk-[^"]*\.tar\.(zst|xz)' | head -n 1)
           
-          if [ -z "$SDK_FILE" ]; then
-            echo "错误: 未找到 SDK 文件！"
-            exit 1
-          fi
-
           wget "$BASE_URL/$SDK_FILE" -O sdk_archive
           mkdir sdk
           if [[ "$SDK_FILE" == *.zst ]]; then
@@ -55,17 +51,15 @@ jobs:
             tar -xJf sdk_archive -C sdk --strip-components=1
           fi
 
-      - name: Add Multiple Repositories
+      - name: Add Repositories
         run: |
           cd sdk
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           
-          # 将逗号替换为空格，处理多个 URL
           REPOS=$(echo "${{ github.event.inputs.repo_urls }}" | tr ',' ' ')
           INDEX=1
           for REPO in $REPOS; do
-            echo "添加仓库 $INDEX: $REPO"
             echo "src-git custom_repo_$INDEX $REPO" >> feeds.conf.default
             ((INDEX++))
           done
@@ -73,22 +67,23 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Compile Multiple Packages
+      - name: Compile Packages
         run: |
           cd sdk
           make defconfig
           
-          # 将逗号替换为空格，循环编译
           PKGS=$(echo "${{ github.event.inputs.package_names }}" | tr ',' ' ')
           for PKG in $PKGS; do
-            echo "正在编译包: $PKG"
-            # 使用 -j$(nproc) 开启多核编译提高速度，如果报错可改回单核
+            echo "Building: $PKG"
+            # 尝试多线程编译，失败则回退单线程查看具体错误
             make package/$PKG/compile V=s -j$(nproc) || make package/$PKG/compile V=s
           done
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-Packages-${{ github.event.inputs.openwrt_version }}-${{ github.run_id }}
+          name: OpenWrt-Packages-${{ github.event.inputs.openwrt_version }}
+          # 同时匹配 .ipk (旧版) 和 .apk (新版)
           path: |
             sdk/bin/packages/**/*.ipk
+            sdk/bin/packages/**/*.apk
