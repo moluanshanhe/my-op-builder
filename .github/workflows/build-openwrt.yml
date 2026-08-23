@@ -1,0 +1,104 @@
+# 使用方法：
+# 1. 新建一个仓库（公开/私有均可），把本文件放到 .github/workflows/build-openwrt.yml
+# 2. 若不想把宽带账号密码写进仓库，在仓库 Settings -> Secrets and variables ->
+#    Actions 中添加 PPPOE_USER 和 PPPOE_PASS 两个 secret
+#    （不设置 secret 时，会用下方 env 里的默认值）
+# 3. 到仓库 Actions 页面手动触发 Run workflow，或按 schedule 定时自动构建
+
+name: Build OpenWrt Image
+
+on:
+  workflow_dispatch:      # 手动触发
+  schedule:
+    - cron: '0 4 * * 1'   # 每周一 12:04 (北京时间) 自动构建，跟随 OpenClash 更新
+  # push:
+  #   branches: [ main ]  # 也可以改成 push 触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENWRT_VERSION: '25.12.5'
+      # 未设置 GitHub Secrets 时使用的默认值
+      PPPOE_USER: ${{ secrets.PPPOE_USER || '037707674604' }}
+      PPPOE_PASS: ${{ secrets.PPPOE_PASS || '123456' }}
+
+    steps:
+      - name: Download ImageBuilder
+        run: |
+          wget -q "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.xz"
+          tar -xJf openwrt-imagebuilder-*.tar.xz
+          mv openwrt-imagebuilder-*/ builder/
+          cd builder
+          mkdir -p files/etc/config files/etc/uci-defaults files/root
+
+      - name: Write network config (eth3 PPPoE)
+        run: |
+          cat > builder/files/etc/config/network <<EOF
+          config interface 'loopback'
+          	option device 'lo'
+          	option proto 'static'
+          	option ipaddr '127.0.0.1'
+          	option netmask '255.0.0.0'
+
+          config globals 'globals'
+          	option ula_prefix 'fd00::/48'
+
+          config device
+          	option name 'eth3'
+
+          config interface 'wan'
+          	option device 'eth3'
+          	option proto 'pppoe'
+          	option username '${PPPOE_USER}'
+          	option password '${PPPOE_PASS}'
+          	option ipv6 'auto'
+
+          config interface 'wan6'
+          	option device 'eth3'
+          	option proto 'dhcpv6'
+          EOF
+
+      - name: Write OpenClash auto-install script
+        run: |
+          cat > builder/files/etc/uci-defaults/99-openclash-install <<'EOF'
+          #!/bin/sh
+          OC_APK="/root/luci-app-openclash.apk"
+          if [ -f "$OC_APK" ]; then
+              apk add --allow-untrusted "$OC_APK"
+              rm -f "$OC_APK"
+          fi
+          exit 0
+          EOF
+
+      - name: Download latest OpenClash
+        run: |
+          URL=$(curl -s https://api.github.com/repos/vernesong/OpenClash/releases/latest \
+                | grep -oE 'https://[^"]+\.apk' | head -1)
+          echo "OpenClash: $URL"
+          curl -L -o builder/files/root/luci-app-openclash.apk "$URL"
+
+      - name: Build image
+        run: |
+          cd builder
+          make image \
+            PROFILE="generic" \
+            ROOTFS_PARTSIZE="1024" \
+            PACKAGES="etherwake luci-app-wol" \
+            FILES="files/" \
+            EXTRA_IMAGE_NAME="pppoe-openclash"
+
+      - name: Upload artifacts (7 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ env.OPENWRT_VERSION }}-pppoe-openclash
+          path: builder/bin/targets/x86/64/*
+          retention-days: 7
+
+      # 如需自动发布 Release，取消下面注释（需要 permissions: contents: write）
+      # - name: Release
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     tag_name: openwrt-${{ env.OPENWRT_VERSION }}-${{ github.run_number }}
+      #     files: builder/bin/targets/x86/64/*.img.gz
