@@ -27,8 +27,9 @@ jobs:
     steps:
       - name: Download ImageBuilder
         run: |
-          wget -q "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.xz"
-          tar -xJf openwrt-imagebuilder-*.tar.xz
+          wget -q "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+          command -v zstd >/dev/null 2>&1 || apt-get install -y -qq zstd
+          tar --zstd -xf openwrt-imagebuilder-*.tar.zst
           mv openwrt-imagebuilder-*/ builder/
           cd builder
           mkdir -p files/etc/config files/etc/uci-defaults files/root
