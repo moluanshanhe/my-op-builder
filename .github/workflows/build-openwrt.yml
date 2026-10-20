@@ -22,6 +22,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     env:
       # 未设置 GitHub Secrets 时使用的默认值
@@ -72,7 +74,36 @@ jobs:
           fi
           mv openwrt-imagebuilder-*/ builder/
           cd builder
-          mkdir -p files/etc/config files/etc/uci-defaults files/etc/openclash/core files/root
+          mkdir -p files/etc/config files/etc/uci-defaults files/etc/openclash/core files/etc/sysctl.d files/root
+
+      - name: Write system, timezone & BBR config
+        run: |
+          mkdir -p builder/files/etc/config builder/files/etc/sysctl.d
+
+          # 1. 预置 CST-8 中国时区与国内 NTP 服务器
+          cat > builder/files/etc/config/system <<'EOF'
+          config system
+          	option hostname 'OpenWrt'
+          	option timezone 'CST-8'
+          	option zonename 'Asia/Shanghai'
+          	option ttylogin '0'
+          	option log_size '64'
+          	option urandom_seed '0'
+
+          config timeserver 'ntp'
+          	option enabled '1'
+          	option enable_server '0'
+          	list server 'ntp.aliyun.com'
+          	list server 'time1.cloud.tencent.com'
+          	list server 'cn.pool.ntp.org'
+          	list server 'time.apple.com'
+          EOF
+
+          # 2. 启用 TCP BBR 拥塞控制算法
+          cat > builder/files/etc/sysctl.d/99-bbr.conf <<'EOF'
+          net.core.default_qdisc = fq
+          net.ipv4.tcp_congestion_control = bbr
+          EOF
 
       - name: Write network config (eth0-2 LAN, eth3 PPPoE WAN)
         run: |
@@ -251,7 +282,7 @@ jobs:
           	option src 'wan'
           	option src_dport '81'
           	option dest_ip '192.168.1.1'
-          	option dest_port '80'
+          	option dest_port '443'
 
           config redirect
           	option dest 'lan'
@@ -414,20 +445,29 @@ jobs:
           make image \
             PROFILE="generic" \
             ROOTFS_PARTSIZE="1024" \
-            PACKAGES="luci luci-base luci-compat luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn etherwake luci-app-wol luci-i18n-wol-zh-cn -dnsmasq dnsmasq-full bash curl ca-bundle ip-full ruby ruby-yaml kmod-tun kmod-nft-tproxy unzip coreutils-nohup tar ppp ppp-mod-pppoe kmod-igc kmod-r8168" \
+            PACKAGES="luci-ssl luci luci-base luci-compat luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn etherwake luci-app-wol luci-i18n-wol-zh-cn -dnsmasq dnsmasq-full bash curl ca-bundle ip-full ruby ruby-yaml kmod-tun kmod-nft-tproxy unzip coreutils-nohup tar ppp ppp-mod-pppoe kmod-igc kmod-r8125 kmod-r8168 kmod-e1000e kmod-tcp-bbr" \
             FILES="files/" \
             EXTRA_IMAGE_NAME="pppoe-openclash-smart"
 
       - name: Upload artifacts (7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ env.OPENWRT_VERSION }}-pppoe-openclash-smart
-          path: builder/bin/targets/x86/64/*
+          name: openwrt-${{ env.OPENWRT_VERSION }}-efi
+          path: builder/bin/targets/x86/64/*-combined-efi.img.gz
           retention-days: 7
 
-      # 如需自动发布 Release，取消下面注释（需要 permissions: contents: write）
-      # - name: Release
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     tag_name: openwrt-${{ env.OPENWRT_VERSION }}-${{ github.run_number }}
-      #     files: builder/bin/targets/x86/64/*.img.gz
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.OPENWRT_VERSION }}-${{ github.run_number }}
+          name: OpenWrt ${{ env.OPENWRT_VERSION }} (EFI Combined)
+          body: |
+            ### 🚀 OpenWrt ${{ env.OPENWRT_VERSION }} (EFI 专属定制固件)
+            - **固件架构**: x86_64 UEFI Combined (`*-combined-efi.img.gz`)
+            - **内核优化**: TCP BBR + 硬件/软件流量卸载 (Flow Offloading) + FullCone NAT
+            - **集成驱动**: Intel i225/i226 (`kmod-igc`), Realtek 2.5G (`kmod-r8125`), Realtek 1G (`kmod-r8168`), Intel 1G (`kmod-e1000e`)
+            - **安全加固**: 集成 `luci-ssl`，WAN 81 端口转发升级为 HTTPS (443) 加密通信
+            - **科学与内核**: OpenClash (预置 Smart 智能内核 + LightGBM Model.bin + Country.mmdb 离线库)
+            - **时区与授时**: Asia/Shanghai (CST-8) + 阿里云/腾讯云 NTP
+            - **网络默认**: `eth0~eth2` 桥接为 LAN (`192.168.1.1`)，`eth3` 为 PPPoE 拨号口
+          files: builder/bin/targets/x86/64/*-combined-efi.img.gz
