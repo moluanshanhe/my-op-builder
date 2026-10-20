@@ -442,6 +442,9 @@ jobs:
       - name: Build image
         run: |
           cd builder
+          # 强制双重确保 1024MB (1GB) 分区大小生效
+          sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=1024/' .config 2>/dev/null || echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
+          find target/linux/x86/ -name "Makefile" -exec sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE:=.*/CONFIG_TARGET_ROOTFS_PARTSIZE:=1024/' {} + 2>/dev/null || true
           make image \
             PROFILE="generic" \
             ROOTFS_PARTSIZE="1024" \
