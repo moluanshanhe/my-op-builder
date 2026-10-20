@@ -9,6 +9,11 @@ name: Build OpenWrt Image
 
 on:
   workflow_dispatch:      # 手动触发
+    inputs:
+      version:
+        description: 'OpenWrt 版本 (留空则自动联网获取最新稳定版)'
+        required: false
+        default: ''
   schedule:
     - cron: '0 4 * * 1'   # 每周一 12:04 (北京时间) 自动构建，跟随 OpenClash 更新
   # push:
@@ -19,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      OPENWRT_VERSION: '25.12.5'
       # 未设置 GitHub Secrets 时使用的默认值
       PPPOE_USER: ${{ secrets.PPPOE_USER || '037707674604' }}
       PPPOE_PASS: ${{ secrets.PPPOE_PASS || '123456' }}
@@ -28,11 +32,44 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Resolve OpenWrt Version (Latest Stable)
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            echo "未手动指定版本，正在联网获取官方最新稳定版..."
+            VERSION=$(curl -fsSL https://downloads.openwrt.org/releases/ \
+              | grep -oE 'href=[^ ]+' \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+              | sort -V \
+              | tail -n 1)
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "未能获取到最新版本，使用备用稳定版本 25.12.6"
+            VERSION="25.12.6"
+          fi
+
+          echo "OPENWRT_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Selected OpenWrt Version: $VERSION"
+          echo "### 🚀 编译版本: OpenWrt $VERSION" >> $GITHUB_STEP_SUMMARY
+
       - name: Download ImageBuilder
         run: |
-          wget -q "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
+          TARGET_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/"
+          echo "Fetching ImageBuilder package list from: $TARGET_URL"
+          IB_FILE=$(curl -fsSL "$TARGET_URL" | grep -oE 'openwrt-imagebuilder-[^"]+\.tar\.(zst|xz)' | head -n 1)
+          if [ -z "$IB_FILE" ]; then
+            echo "Error: ImageBuilder package not found in $TARGET_URL"
+            exit 1
+          fi
+          echo "Downloading: $TARGET_URL$IB_FILE"
+          wget -q "$TARGET_URL$IB_FILE"
           command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd
-          tar --zstd -xf openwrt-imagebuilder-*.tar.zst
+          if [[ "$IB_FILE" == *.zst ]]; then
+            tar --zstd -xf "$IB_FILE"
+          else
+            tar -xf "$IB_FILE"
+          fi
           mv openwrt-imagebuilder-*/ builder/
           cd builder
           mkdir -p files/etc/config files/etc/uci-defaults files/etc/openclash/core files/root
