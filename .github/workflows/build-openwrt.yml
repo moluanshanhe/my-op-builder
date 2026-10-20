@@ -25,16 +25,19 @@ jobs:
       PPPOE_PASS: ${{ secrets.PPPOE_PASS || '123456' }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download ImageBuilder
         run: |
           wget -q "https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst"
-          command -v zstd >/dev/null 2>&1 || apt-get install -y -qq zstd
+          command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd
           tar --zstd -xf openwrt-imagebuilder-*.tar.zst
           mv openwrt-imagebuilder-*/ builder/
           cd builder
-          mkdir -p files/etc/config files/etc/uci-defaults files/root
+          mkdir -p files/etc/config files/etc/uci-defaults files/etc/openclash/core files/root
 
-      - name: Write network config (eth3 PPPoE)
+      - name: Write network config (eth0-2 LAN, eth3 PPPoE WAN)
         run: |
           cat > builder/files/etc/config/network <<EOF
           config interface 'loopback'
@@ -44,7 +47,22 @@ jobs:
           	option netmask '255.0.0.0'
 
           config globals 'globals'
-          	option ula_prefix 'fd00::/48'
+          	option ula_prefix 'fd79:d90c:7498::/48'
+          	option packet_steering '1'
+
+          config device
+          	option name 'br-lan'
+          	option type 'bridge'
+          	list ports 'eth0'
+          	list ports 'eth1'
+          	list ports 'eth2'
+
+          config interface 'lan'
+          	option device 'br-lan'
+          	option proto 'static'
+          	option ipaddr '192.168.1.1'
+          	option netmask '255.255.255.0'
+          	option ip6assign '60'
 
           config device
           	option name 'eth3'
@@ -55,14 +73,284 @@ jobs:
           	option username '${PPPOE_USER}'
           	option password '${PPPOE_PASS}'
           	option ipv6 'auto'
+          	option norelease '1'
 
           config interface 'wan6'
           	option device 'eth3'
           	option proto 'dhcpv6'
           EOF
 
-      - name: Write OpenClash auto-install script
+      - name: Write firewall config (Port forwards & NAT optimization)
         run: |
+          cat > builder/files/etc/config/firewall <<'EOF'
+          config defaults
+          	option syn_flood '1'
+          	option input 'REJECT'
+          	option output 'ACCEPT'
+          	option forward 'REJECT'
+          	option flow_offloading '1'
+          	option flow_offloading_hw '1'
+          	option fullcone '1'
+          	option fullcone6 '0'
+
+          config zone
+          	option name 'lan'
+          	option input 'ACCEPT'
+          	option output 'ACCEPT'
+          	option forward 'ACCEPT'
+          	list network 'lan'
+
+          config zone
+          	option name 'wan'
+          	option input 'REJECT'
+          	option output 'ACCEPT'
+          	option forward 'DROP'
+          	option masq '1'
+          	option mtu_fix '1'
+          	list network 'wan'
+          	list network 'wan6'
+
+          config forwarding
+          	option src 'lan'
+          	option dest 'wan'
+
+          config rule
+          	option name 'Allow-DHCP-Renew'
+          	option src 'wan'
+          	option proto 'udp'
+          	option dest_port '68'
+          	option target 'ACCEPT'
+          	option family 'ipv4'
+
+          config rule
+          	option name 'Allow-Ping'
+          	option src 'wan'
+          	option proto 'icmp'
+          	option icmp_type 'echo-request'
+          	option family 'ipv4'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-IGMP'
+          	option src 'wan'
+          	option proto 'igmp'
+          	option family 'ipv4'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-DHCPv6'
+          	option src 'wan'
+          	option proto 'udp'
+          	option dest_port '546'
+          	option family 'ipv6'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-MLD'
+          	option src 'wan'
+          	option proto 'icmp'
+          	option src_ip 'fe80::/10'
+          	list icmp_type '130/0'
+          	list icmp_type '131/0'
+          	list icmp_type '132/0'
+          	list icmp_type '143/0'
+          	option family 'ipv6'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-ICMPv6-Input'
+          	option src 'wan'
+          	option proto 'icmp'
+          	list icmp_type 'echo-request'
+          	list icmp_type 'echo-reply'
+          	list icmp_type 'destination-unreachable'
+          	list icmp_type 'packet-too-big'
+          	list icmp_type 'time-exceeded'
+          	list icmp_type 'bad-header'
+          	list icmp_type 'unknown-header-type'
+          	list icmp_type 'router-solicitation'
+          	list icmp_type 'neighbour-solicitation'
+          	list icmp_type 'router-advertisement'
+          	list icmp_type 'neighbour-advertisement'
+          	option limit '1000/sec'
+          	option family 'ipv6'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-ICMPv6-Forward'
+          	option src 'wan'
+          	option dest '*'
+          	option proto 'icmp'
+          	list icmp_type 'echo-request'
+          	list icmp_type 'echo-reply'
+          	list icmp_type 'destination-unreachable'
+          	list icmp_type 'packet-too-big'
+          	list icmp_type 'time-exceeded'
+          	list icmp_type 'bad-header'
+          	list icmp_type 'unknown-header-type'
+          	option limit '1000/sec'
+          	option family 'ipv6'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-IPSec-ESP'
+          	option src 'wan'
+          	option dest 'lan'
+          	option proto 'esp'
+          	option target 'ACCEPT'
+
+          config rule
+          	option name 'Allow-ISAKMP'
+          	option src 'wan'
+          	option dest 'lan'
+          	option dest_port '500'
+          	option proto 'udp'
+          	option target 'ACCEPT'
+
+          config redirect
+          	option dest 'lan'
+          	option target 'DNAT'
+          	option name 'openwrt'
+          	option src 'wan'
+          	option src_dport '81'
+          	option dest_ip '192.168.1.1'
+          	option dest_port '80'
+
+          config redirect
+          	option dest 'lan'
+          	option target 'DNAT'
+          	option name 'dsm'
+          	option src 'wan'
+          	option src_dport '5000-10000'
+          	option dest_ip '192.168.1.211'
+          	option dest_port '5000-10000'
+
+          config redirect
+          	option dest 'lan'
+          	option target 'DNAT'
+          	option name '远程桌面'
+          	option src 'wan'
+          	option src_dport '13389'
+          	option dest_ip '192.168.1.187'
+          	option dest_port '3389'
+
+          config redirect
+          	option dest 'lan'
+          	option target 'DNAT'
+          	option name 'moonlight'
+          	option src 'wan'
+          	option src_dport '47900-48050'
+          	option dest_ip '192.168.1.187'
+          	option dest_port '47900-48050'
+
+          config redirect
+          	option dest 'lan'
+          	option target 'DNAT'
+          	option name 'pve'
+          	option src 'wan'
+          	option src_dport '8006'
+          	option dest_ip '192.168.1.99'
+          	option dest_port '8006'
+          EOF
+
+      - name: Write DHCP and static lease config
+        run: |
+          cat > builder/files/etc/config/dhcp <<'EOF'
+          config dnsmasq
+          	option domainneeded '1'
+          	option boguspriv '1'
+          	option filterwin2k '0'
+          	option localise_queries '1'
+          	option rebind_protection '1'
+          	option rebind_localhost '1'
+          	option local '/lan/'
+          	option domain 'lan'
+          	option expandhosts '1'
+          	option nonegcache '0'
+          	option authoritative '1'
+          	option readethers '1'
+          	option leasefile '/tmp/dhcp.leases'
+          	option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+          	option nonwildcard '1'
+          	option localservice '1'
+          	option ednspacket_max '1232'
+          	option filter_aaaa '0'
+          	option filter_a '0'
+
+          config dhcp 'lan'
+          	option interface 'lan'
+          	option start '100'
+          	option limit '150'
+          	option leasetime '12h'
+          	option dhcpv4 'server'
+          	option dhcpv6 'server'
+          	option ra 'server'
+          	option ra_slaac '1'
+          	list ra_flags 'managed-config'
+          	list ra_flags 'other-config'
+
+          config dhcp 'wan'
+          	option interface 'wan'
+          	option ignore '1'
+
+          config odhcpd 'odhcpd'
+          	option maindhcp '0'
+          	option leasefile '/tmp/odhcpd.leases'
+          	option leasetrigger '/usr/sbin/odhcpd-update'
+          	option loglevel '4'
+
+          config domain '_ta'
+          	option name 'time.android.com'
+          	option ip '203.107.6.88'
+
+          config host
+          	option name 'DESKTOP-RHPN0JG'
+          	option ip '192.168.1.187'
+          	list mac '00:e2:69:a6:52:72'
+
+          config host
+          	option name 'pve'
+          	option ip '192.168.1.99'
+          	list mac '00:e2:69:55:87:39'
+
+          config host
+          	option name 'dsm'
+          	option ip '192.168.1.211'
+          	list mac 'bc:24:11:43:f0:d7'
+          EOF
+
+      - name: Download OpenClash, Smart Core & Geodata
+        run: |
+          mkdir -p builder/files/root builder/files/etc/openclash/core
+
+          # 1. 下载最新 OpenClash APK
+          URL=$(curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                https://api.github.com/repos/vernesong/OpenClash/releases/latest 2>/dev/null \
+                | grep -oE 'https://[^"]+\.apk' | head -1)
+          if [ -z "$URL" ]; then
+            TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/vernesong/OpenClash/releases/latest | awk -F'/' '{print $NF}' | tr -d '\r\n')
+            URL="https://github.com/vernesong/OpenClash/releases/download/${TAG}/luci-app-openclash_${TAG#v}_all.apk"
+          fi
+          echo "OpenClash: $URL"
+          curl -fsSL -o builder/files/root/luci-app-openclash.apk "$URL"
+
+          # 2. 下载 OpenClash 官方配套 Smart 内核 (AMD64)
+          echo "Downloading OpenClash Smart Core..."
+          curl -fsSL "https://raw.githubusercontent.com/vernesong/OpenClash/core/master/smart/clash-linux-amd64.tar.gz" -o /tmp/clash-smart.tar.gz
+          tar -zxf /tmp/clash-smart.tar.gz -C /tmp/
+          mv /tmp/clash builder/files/etc/openclash/core/clash_meta
+          cp builder/files/etc/openclash/core/clash_meta builder/files/etc/openclash/core/clash
+          chmod 4755 builder/files/etc/openclash/core/clash_meta builder/files/etc/openclash/core/clash
+          rm -f /tmp/clash-smart.tar.gz
+
+          # 3. 下载配套 LightGBM 模型 (Model.bin) 与基础数据库 (Country.mmdb)
+          echo "Downloading Smart Core Model.bin & Country.mmdb..."
+          curl -fsSL "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin" -o builder/files/etc/openclash/Model.bin || true
+          curl -fsSL "https://raw.githubusercontent.com/alecthw/mmdb_china_ip_list/release/Country.mmdb" -o builder/files/etc/openclash/Country.mmdb || true
+
+      - name: Write OpenClash auto-install and init script
+        run: |
+          mkdir -p builder/files/etc/uci-defaults
           cat > builder/files/etc/uci-defaults/99-openclash-install <<'EOF'
           #!/bin/sh
           OC_APK="/root/luci-app-openclash.apk"
@@ -70,15 +358,18 @@ jobs:
               apk add --allow-untrusted "$OC_APK"
               rm -f "$OC_APK"
           fi
+
+          # 确保内核权限
+          chmod 4755 /etc/openclash/core/* 2>/dev/null || true
+
+          # 预设配置：启用 Smart 内核
+          uci -q set openclash.config.core_type="Smart"
+          uci -q set openclash.config.smart_enable="1"
+          uci -q commit openclash
+
           exit 0
           EOF
-
-      - name: Download latest OpenClash
-        run: |
-          URL=$(curl -s https://api.github.com/repos/vernesong/OpenClash/releases/latest \
-                | grep -oE 'https://[^"]+\.apk' | head -1)
-          echo "OpenClash: $URL"
-          curl -L -o builder/files/root/luci-app-openclash.apk "$URL"
+          chmod +x builder/files/etc/uci-defaults/99-openclash-install
 
       - name: Build image
         run: |
@@ -86,14 +377,14 @@ jobs:
           make image \
             PROFILE="generic" \
             ROOTFS_PARTSIZE="1024" \
-            PACKAGES="etherwake luci-app-wol" \
+            PACKAGES="luci luci-base luci-compat luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn etherwake luci-app-wol luci-i18n-wol-zh-cn -dnsmasq dnsmasq-full bash curl ca-bundle ip-full ruby ruby-yaml kmod-tun kmod-nft-tproxy unzip coreutils-nohup tar ppp ppp-mod-pppoe kmod-igc kmod-r8168" \
             FILES="files/" \
-            EXTRA_IMAGE_NAME="pppoe-openclash"
+            EXTRA_IMAGE_NAME="pppoe-openclash-smart"
 
       - name: Upload artifacts (7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ env.OPENWRT_VERSION }}-pppoe-openclash
+          name: openwrt-${{ env.OPENWRT_VERSION }}-pppoe-openclash-smart
           path: builder/bin/targets/x86/64/*
           retention-days: 7
 
