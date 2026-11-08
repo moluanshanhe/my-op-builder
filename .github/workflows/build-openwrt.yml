@@ -40,7 +40,7 @@ jobs:
           if [ -z "$VERSION" ]; then
             echo "未手动指定版本，正在联网获取官方最新稳定版..."
             VERSION=$(curl -fsSL https://downloads.openwrt.org/releases/ \
-              | grep -oE 'href=[^ ]+' \
+              | grep -oE 'href="[0-9]+\.[0-9]+\.[0-9]+/"' \
               | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
               | sort -V \
               | tail -n 1)
@@ -389,7 +389,7 @@ jobs:
 
       - name: Download OpenClash, Smart Core & Geodata
         run: |
-          mkdir -p builder/files/root builder/files/etc/openclash/core
+          mkdir -p builder/files/etc/openclash/core
 
           # 1. 下载最新 OpenClash APK
           URL=$(curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -397,10 +397,10 @@ jobs:
                 | grep -oE 'https://[^"]+\.apk' | head -1)
           if [ -z "$URL" ]; then
             TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/vernesong/OpenClash/releases/latest | awk -F'/' '{print $NF}' | tr -d '\r\n')
-            URL="https://github.com/vernesong/OpenClash/releases/download/${TAG}/luci-app-openclash_${TAG#v}_all.apk"
+            URL="https://github.com/vernesong/OpenClash/releases/download/${TAG}/luci-app-openclash-${TAG#v}.apk"
           fi
           echo "OpenClash: $URL"
-          curl -fsSL -o builder/files/root/luci-app-openclash.apk "$URL"
+          curl -fsSL -o builder/files/etc/openclash/luci-app-openclash.apk "$URL"
 
           # 2. 下载 OpenClash 官方配套 Smart 内核 (AMD64)
           echo "Downloading OpenClash Smart Core..."
@@ -416,19 +416,24 @@ jobs:
           curl -fsSL "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin" -o builder/files/etc/openclash/Model.bin || true
           curl -fsSL "https://raw.githubusercontent.com/alecthw/mmdb_china_ip_list/release/Country.mmdb" -o builder/files/etc/openclash/Country.mmdb || true
 
+          # 4. 下载配套规则库 (GeoIP.dat 与 GeoSite.dat)
+          echo "Downloading GeoIP.dat & GeoSite.dat..."
+          curl -fsSL "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat" -o builder/files/etc/openclash/GeoIP.dat || true
+          curl -fsSL "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat" -o builder/files/etc/openclash/GeoSite.dat || true
+
       - name: Write OpenClash auto-install and init script
         run: |
           mkdir -p builder/files/etc/uci-defaults
           cat > builder/files/etc/uci-defaults/99-openclash-install <<'EOF'
           #!/bin/sh
-          OC_APK="/root/luci-app-openclash.apk"
-          if [ -f "$OC_APK" ]; then
+          OC_APK="/etc/openclash/luci-app-openclash.apk"
+          if ! apk info -e luci-app-openclash >/dev/null 2>&1 && [ -f "$OC_APK" ]; then
               apk add --allow-untrusted "$OC_APK"
-              rm -f "$OC_APK"
           fi
 
-          # 确保内核权限
+          # 确保内核与数据文件权限
           chmod 4755 /etc/openclash/core/* 2>/dev/null || true
+          chmod 644 /etc/openclash/*.dat /etc/openclash/*.mmdb /etc/openclash/*.bin 2>/dev/null || true
 
           # 预设配置：启用 Smart 内核
           uci -q set openclash.config.core_type="Smart"
@@ -470,7 +475,7 @@ jobs:
             - **内核优化**: TCP BBR + 硬件/软件流量卸载 (Flow Offloading) + FullCone NAT
             - **集成驱动**: Intel i225/i226 (`kmod-igc`), Realtek 2.5G (`kmod-r8125`), Realtek 1G (`kmod-r8168`), Intel 1G (`kmod-e1000e`)
             - **安全加固**: 集成 `luci-ssl`，WAN 81 端口转发升级为 HTTPS (443) 加密通信
-            - **科学与内核**: OpenClash (预置 Smart 智能内核 + LightGBM Model.bin + Country.mmdb 离线库)
+            - **科学与内核**: OpenClash (预置 Smart 智能内核 + LightGBM Model.bin + Country.mmdb + GeoIP.dat / GeoSite.dat 规则库，保留离线 APK)
             - **时区与授时**: Asia/Shanghai (CST-8) + 阿里云/腾讯云 NTP
             - **网络默认**: `eth0~eth2` 桥接为 LAN (`192.168.1.1`)，`eth3` 为 PPPoE 拨号口
           files: builder/bin/targets/x86/64/*-combined-efi.img.gz
