@@ -148,7 +148,7 @@ jobs:
           	option proto 'dhcpv6'
           EOF
 
-      - name: Write firewall config (Port forwards & NAT optimization)
+      - name: Write firewall config (WireGuard & NAT optimization)
         run: |
           cat > builder/files/etc/config/firewall <<'EOF'
           config defaults
@@ -167,6 +167,7 @@ jobs:
           	option output 'ACCEPT'
           	option forward 'ACCEPT'
           	list network 'lan'
+          	list network 'wg0'
 
           config zone
           	option name 'wan'
@@ -275,50 +276,12 @@ jobs:
           	option proto 'udp'
           	option target 'ACCEPT'
 
-          config redirect
-          	option dest 'lan'
-          	option target 'DNAT'
-          	option name 'openwrt'
+          config rule
+          	option name 'Allow-WireGuard'
           	option src 'wan'
-          	option src_dport '81'
-          	option dest_ip '192.168.1.1'
-          	option dest_port '443'
-
-          config redirect
-          	option dest 'lan'
-          	option target 'DNAT'
-          	option name 'dsm'
-          	option src 'wan'
-          	option src_dport '5000-10000'
-          	option dest_ip '192.168.1.211'
-          	option dest_port '5000-10000'
-
-          config redirect
-          	option dest 'lan'
-          	option target 'DNAT'
-          	option name '远程桌面'
-          	option src 'wan'
-          	option src_dport '13389'
-          	option dest_ip '192.168.1.187'
-          	option dest_port '3389'
-
-          config redirect
-          	option dest 'lan'
-          	option target 'DNAT'
-          	option name 'moonlight'
-          	option src 'wan'
-          	option src_dport '47900-48050'
-          	option dest_ip '192.168.1.187'
-          	option dest_port '47900-48050'
-
-          config redirect
-          	option dest 'lan'
-          	option target 'DNAT'
-          	option name 'pve'
-          	option src 'wan'
-          	option src_dport '8006'
-          	option dest_ip '192.168.1.99'
-          	option dest_port '8006'
+          	option dest_port '51820'
+          	option proto 'udp'
+          	option target 'ACCEPT'
           EOF
 
       - name: Write DHCP and static lease config
@@ -444,6 +407,22 @@ jobs:
           EOF
           chmod +x builder/files/etc/uci-defaults/99-openclash-install
 
+          # WireGuard 服务端初次开机自动配置脚本
+          cat > builder/files/etc/uci-defaults/98-wireguard-setup <<'EOF'
+          #!/bin/sh
+          if command -v wg >/dev/null 2>&1 && ! uci -q get network.wg0 >/dev/null; then
+              WG_KEY=$(wg genkey)
+              uci set network.wg0=interface
+              uci set network.wg0.proto='wireguard'
+              uci set network.wg0.private_key="$WG_KEY"
+              uci set network.wg0.listen_port='51820'
+              uci add_list network.wg0.addresses='10.0.0.1/24'
+              uci commit network
+          fi
+          exit 0
+          EOF
+          chmod +x builder/files/etc/uci-defaults/98-wireguard-setup
+
       - name: Build image
         run: |
           cd builder
@@ -453,7 +432,7 @@ jobs:
           make image \
             PROFILE="generic" \
             ROOTFS_PARTSIZE="1024" \
-            PACKAGES="luci-ssl luci luci-base luci-compat luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn etherwake luci-app-wol luci-i18n-wol-zh-cn -dnsmasq dnsmasq-full bash curl ca-bundle ip-full ruby ruby-yaml kmod-tun kmod-nft-tproxy unzip coreutils-nohup tar ppp ppp-mod-pppoe kmod-igc kmod-r8125 kmod-r8168 kmod-e1000e kmod-tcp-bbr" \
+            PACKAGES="luci-ssl luci luci-base luci-compat luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn etherwake luci-app-wol luci-i18n-wol-zh-cn -dnsmasq dnsmasq-full bash curl ca-bundle ip-full ruby ruby-yaml kmod-tun kmod-nft-tproxy unzip coreutils-nohup tar ppp ppp-mod-pppoe kmod-igc kmod-r8125 kmod-r8168 kmod-e1000e kmod-tcp-bbr kmod-wireguard wireguard-tools luci-proto-wireguard qrencode luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-aliyun ddns-scripts-cloudflare ddns-scripts-dnspod" \
             FILES="files/" \
             EXTRA_IMAGE_NAME="pppoe-openclash-smart"
 
@@ -472,9 +451,10 @@ jobs:
           body: |
             ### 🚀 OpenWrt ${{ env.OPENWRT_VERSION }} (EFI 专属定制固件)
             - **固件架构**: x86_64 UEFI Combined (`*-combined-efi.img.gz`)
+            - **远程访问**: WireGuard 服务端 (`kmod-wireguard`, `wireguard-tools`, `luci-proto-wireguard`, `qrencode` 扫码配置) + DDNS 动态域名 (`luci-app-ddns`, 阿里/CF/DNSPod)
+            - **安全加固**: 取消所有公网业务端口转发（零端口暴露），仅保留 WireGuard 单个 UDP 安全端口 (51820)
             - **内核优化**: TCP BBR + 硬件/软件流量卸载 (Flow Offloading) + FullCone NAT
             - **集成驱动**: Intel i225/i226 (`kmod-igc`), Realtek 2.5G (`kmod-r8125`), Realtek 1G (`kmod-r8168`), Intel 1G (`kmod-e1000e`)
-            - **安全加固**: 集成 `luci-ssl`，WAN 81 端口转发升级为 HTTPS (443) 加密通信
             - **科学与内核**: OpenClash (预置 Smart 智能内核 + LightGBM Model.bin + Country.mmdb + GeoIP.dat / GeoSite.dat 规则库，保留离线 APK)
             - **时区与授时**: Asia/Shanghai (CST-8) + 阿里云/腾讯云 NTP
             - **网络默认**: `eth0~eth2` 桥接为 LAN (`192.168.1.1`)，`eth3` 为 PPPoE 拨号口
